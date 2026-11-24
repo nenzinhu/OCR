@@ -20,7 +20,22 @@ Use rótulos seguidos de dois pontos. Quando legíveis, use 'ARVC: número' na s
 Mantenha a numeração original mesmo para seções vazias."""
 
 
-def read_with_ai(image, api_key):
+MODELS = {
+    "OpenRouter": ("nvidia/nemotron-3.5-super-vl:free", "google/gemma-4-31b-it:free",
+                   "google/gemma-4-26b-a4b-it:free", "inclusionai/ling-3.2-flash:free"),
+    "Cohere": ("command-a-vision-07-2025", "c4ai-aya-vision-32b"),
+}
+
+
+def read_with_ai(image, api_key, provider="OpenRouter", model=None):
+    if provider not in MODELS:
+        raise RuntimeError("Escolha um provedor de visão disponível.")
+    if model and model not in MODELS[provider]:
+        raise RuntimeError("Escolha um modelo de visão da lista.")
+    if not model:
+        model = (os.environ.get("OPENROUTER_VISION_MODEL") if provider == "OpenRouter" else None)
+        model = model or MODELS[provider][0]
+    cohere = provider == "Cohere"
     mime = IMAGE_TYPES.get(image.suffix.lower())
     if not mime:
         raise RuntimeError("Escolha uma imagem JPG, PNG ou WebP.")
@@ -28,7 +43,7 @@ def read_with_ai(image, api_key):
         raise RuntimeError("Escolha uma imagem de até 3 MiB.")
     encoded = base64.b64encode(image.read_bytes()).decode("ascii")
     payload = {
-        "model": os.environ.get("GROQ_VISION_MODEL", "qwen/qwen3.8-27b"),
+        "model": model,
         "messages": [
             {"role": "system", "content": INSTRUCTIONS},
             {"role": "user", "content": [
@@ -36,10 +51,11 @@ def read_with_ai(image, api_key):
                 {"type": "image_url", "image_url": {"url": f"data:{mime};base64,{encoded}"}},
             ]},
         ],
-        "max_completion_tokens": 8192,
+        "max_tokens": 8192,
     }
+    endpoint = "https://api.cohere.com/v2/chat" if cohere else "https://openrouter.ai/api/v1/chat/completions"
     request = Request(
-        "https://api.groq.com/openai/v1/chat/completions", data=json.dumps(payload).encode(),
+        endpoint, data=json.dumps(payload).encode(),
         headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
     )
     try:
@@ -54,17 +70,15 @@ def read_with_ai(image, api_key):
             message, code = "", ""
         message = " ".join(str(message).replace(api_key, "[oculto]").split())[:350]
         code = " ".join(str(code or "").replace(api_key, "[oculto]").split())[:80]
-        if code == "model_permission_blocked_org":
-            hint = "Habilite este modelo no projeto ou na organização Groq com um administrador."
-        elif error.code == 401:
-            hint = "Confira se a chave foi criada na Groq e se ainda está ativa."
+        if error.code == 401:
+            hint = f"Confira se a chave foi criada no provedor {provider} e se ainda está ativa."
         elif error.code == 403:
-            hint = "Confira as permissões da chave, do projeto e da organização na Groq."
+            hint = "Confira as permissões da chave e o acesso ao modelo na conta."
         elif error.code == 429:
-            hint = "Confira os limites de uso do projeto na Groq."
+            hint = "Confira os limites de uso no provedor."
         else:
-            hint = "Confira os detalhes retornados pela Groq."
-        diagnostic = f"Groq HTTP {error.code} • {payload['model']}"
+            hint = "Confira os detalhes retornados pelo provedor."
+        diagnostic = f"{provider} HTTP {error.code} • {payload['model']}"
         if code:
             diagnostic += f" • {code}"
         if message:
@@ -72,10 +86,19 @@ def read_with_ai(image, api_key):
         raise RuntimeError(f"{diagnostic}\n\n{hint}") from None
     except (URLError, TimeoutError):
         raise RuntimeError("A conexão com a API falhou ou demorou demais. Tente novamente.") from None
-    choices = result.get("choices") or []
-    if not choices or choices[0].get("finish_reason") != "stop":
-        raise RuntimeError("A Groq não concluiu a leitura. Tente uma foto mais nítida.")
-    source = (choices[0].get("message", {}).get("content") or "").strip()
+    if result.get("error"):
+        detail = str(result["error"].get("message", "")).replace(api_key, "[oculto]")[:350]
+        raise RuntimeError(f"{provider} • {payload['model']}\n{detail}")
+    if cohere:
+        complete = result.get("finish_reason") == "COMPLETE"
+        parts = result.get("message", {}).get("content") or []
+        source = "\n".join(part["text"] for part in parts if part.get("type") == "text").strip()
+    else:
+        choices = result.get("choices") or [{}]
+        complete = choices[0].get("finish_reason") == "stop"
+        source = (choices[0].get("message", {}).get("content") or "").strip()
+    if not complete:
+        raise RuntimeError(f"{provider} não concluiu a leitura. Tente uma foto mais nítida.")
     if not source:
-        raise RuntimeError("A Groq não retornou texto para esta imagem.")
+        raise RuntimeError(f"{provider} não retornou texto para esta imagem.")
     return source, extract(source)

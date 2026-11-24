@@ -7,7 +7,7 @@ from pathlib import Path
 from tkinter import filedialog, messagebox, simpledialog, ttk
 
 from arvc import TAB_ORDER, fill_portal
-from arvc_ia import read_with_ai
+from arvc_ia import MODELS, read_with_ai
 
 BASE = Path(__file__).resolve().parent
 NAVY = "#142D3A"
@@ -25,7 +25,12 @@ class DespachoARVC:
         self.status = tk.StringVar(value="Aguardando uma imagem.")
         self.filename = tk.StringVar(value="Nenhum arquivo selecionado")
         self.busy = False
-        self.api_key = os.environ.get("GROQ_API_KEY", "").strip()
+        self.keys = {
+            "OpenRouter": os.environ.get("OPENROUTER_API_KEY", "").strip(),
+            "Cohere": os.environ.get("COHERE_API_KEY", "").strip(),
+        }
+        self.provider = tk.StringVar(value="OpenRouter")
+        self.model = tk.StringVar()
         self.image_ready = False
         self.closed = threading.Event()
 
@@ -66,6 +71,17 @@ class DespachoARVC:
                  font=("Segoe UI", 13, "bold")).pack(fill="x")
         tk.Label(file_details, text="JPG, PNG ou WebP  •  Até 3 MiB", bg="white", fg="#43606E",
                  anchor="w", font=("Segoe UI", 10)).pack(fill="x", pady=(3, 0))
+        settings = ttk.Frame(body, padding=(8, 0, 8, 10))
+        settings.pack(fill="x")
+        ttk.Label(settings, text="Provedor").pack(side="left", padx=(0, 5))
+        provider = ttk.Combobox(settings, values=list(MODELS), textvariable=self.provider,
+                                state="readonly", width=13)
+        provider.pack(side="left", padx=(0, 15))
+        ttk.Label(settings, text="Modelo de visão").pack(side="left", padx=(0, 5))
+        self.model_select = ttk.Combobox(settings, textvariable=self.model, state="readonly", width=38)
+        self.model_select.pack(side="left", fill="x", expand=True)
+        provider.bind("<<ComboboxSelected>>", self.update_models)
+        self.update_models()
         self.tabs = ttk.Notebook(body)
         self.tabs.pack(fill="both", expand=True)
         short_labels = ("Retenção", "Veículo", "Proprietário", "Condutor", "Guinchamento", "Infrações")
@@ -120,14 +136,20 @@ class DespachoARVC:
         self.update_busy(False)
         self.status.set("Revisão importada. Confira os campos antes de abrir o portal.")
 
+    def update_models(self, event=None):
+        options = MODELS[self.provider.get()]
+        self.model_select.configure(values=options)
+        self.model.set(options[0])
+
     def request_key(self):
+        provider = self.provider.get()
         key = simpledialog.askstring(
-            "Chave da API da Groq",
+            f"Chave da API • {provider}",
             "Informe a chave da API. Ela será usada nesta sessão.",
             show="*", parent=self.window,
         )
         if key and key.strip():
-            self.api_key = key.strip()
+            self.keys[provider] = key.strip()
             self.status.set("Chave configurada para esta sessão.")
 
     def attach_image(self):
@@ -135,12 +157,13 @@ class DespachoARVC:
                                           filetypes=[("Imagens", "*.jpg *.jpeg *.png *.webp")])
         if not path:
             return
-        if not self.api_key:
+        provider, model = self.provider.get(), self.model.get()
+        if not self.keys[provider]:
             self.request_key()
-        if not self.api_key:
+        if not self.keys[provider]:
             return
         if not messagebox.askokcancel(
-            "Ler imagem com IA", "Enviar a imagem selecionada à API da Groq para extrair os dados?",
+            "Ler imagem com IA", f"Enviar a imagem selecionada ao provedor {provider} para extrair os dados?",
             parent=self.window,
         ):
             return
@@ -149,7 +172,8 @@ class DespachoARVC:
         self.image_ready = False
         self.show_result("", {})
         self.update_busy(True)
-        self.run(lambda: self.events.put(("ocr", read_with_ai(Path(path), self.api_key))))
+        key = self.keys[provider]
+        self.run(lambda: self.events.put(("ocr", read_with_ai(Path(path), key, provider, model))))
 
     def run(self, action):
         def worker():
