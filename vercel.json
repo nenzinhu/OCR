@@ -1,0 +1,9 @@
+{
+  "outputDirectory": "public",
+  "functions": {
+    "api/ler.py": {
+      "maxDuration": 120,
+      "includeFiles": "arvc*.py"
+    }
+  }
+}

@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="pt-BR">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Leitor de ARVC</title>
+<style>
+*{box-sizing:border-box}body{margin:0;background:#edf3f5;color:#20343e;font:16px system-ui,sans-serif}header{background:#142d3a;color:white;padding:32px max(20px,calc((100vw - 880px)/2))}h1{margin:0;font-size:2.4rem}header p{margin:8px 0 0;color:#d3e2e8}main{max-width:920px;margin:auto;padding:20px}form,section{background:white;border:1px solid #d1dfe4;border-radius:14px;padding:20px;margin-bottom:14px}label{display:grid;gap:6px;margin:10px 0}input,button,textarea{font:inherit;padding:10px;border:1px solid #9cabb3;border-radius:7px;min-width:0}button{background:#076c64;color:#fff;border:0;cursor:pointer}button:disabled{opacity:.55;cursor:wait}textarea{width:100%}h2{margin:0;font-size:1.2rem}small{display:block;margin:8px 0;color:#43606e}#status{white-space:pre-wrap}#actions{margin:16px 0} 
+</style>
+<header><h1>Leitor de ARVC</h1><p>Digitalize o documento e revise os dados por aba do cadastro.</p></header>
+<main>
+<form id="upload">
+<label>Chave da API Groq <input id="key" type="password" required autocomplete="off"></label>
+<label>Imagem do documento <input id="photo" type="file" accept="image/jpeg,image/png,image/webp" required></label>
+<small>JPG, PNG ou WebP de até 3 MiB. Ao ler, a imagem é enviada à Groq.</small>
+<button id="read" type="submit">Ler imagem</button>
+</form>
+<p id="status" role="status"></p>
+<div id="review"></div>
+<div id="actions" hidden><button id="download" type="button">Baixar dados revisados</button></div>
+</main>
+<script type="module">
+const $ = selector => document.querySelector(selector);
+const form = $("#upload"), status = $("#status"), review = $("#review");
+const actions = $("#actions"), read = $("#read");
+let fields = [];
+form.addEventListener("submit", async event => {
+  event.preventDefault();
+  const image = $("#photo").files[0];
+  if (image.size > 3 * 1024 * 1024) {
+    status.textContent = "Escolha uma imagem de até 3 MiB.";
+    return;
+  }
+  review.replaceChildren();
+  actions.hidden = true;
+  fields = [];
+  read.disabled = true;
+  status.textContent = "Lendo a imagem…";
+  try {
+    const response = await fetch("/api/ler", {
+      method: "POST", headers: {"Content-Type": image.type, "X-Groq-Key": $("#key").value.trim()}, body: image
+    });
+    if (!response.headers.get("Content-Type")?.includes("application/json")) {
+      throw Error("O servidor não concluiu a leitura. Tente novamente.");
+    }
+    const result = await response.json();
+    if (!response.ok) throw Error(result.error);
+    for (const [tab, values] of Object.entries(result.data)) {
+      const section = document.createElement("section");
+      const heading = document.createElement("h2");
+      heading.textContent = tab;
+      section.append(heading);
+      for (const [name, value] of Object.entries(values)) {
+        const label = document.createElement("label");
+        label.textContent = name;
+        const input = document.createElement("input");
+        input.value = value;
+        label.append(input);
+        section.append(label);
+        fields.push({tab, name, input});
+      }
+      review.append(section);
+    }
+    const details = document.createElement("details");
+    const summary = document.createElement("summary");
+    summary.textContent = "Ver transcrição";
+    const transcription = document.createElement("p");
+    transcription.style.whiteSpace = "pre-wrap";
+    transcription.textContent = result.source;
+    details.append(summary, transcription);
+    review.append(details);
+    actions.hidden = fields.length === 0;
+    status.textContent = fields.length ? "Revise os campos antes de baixar os dados." : "Nenhum campo reconhecido. Confira a transcrição.";
+  } catch (error) {
+    status.textContent = error.message;
+  } finally {
+    read.disabled = false;
+  }
+});
+$("#download").addEventListener("click", () => {
+  const data = {};
+  for (const {tab, name, input} of fields) {
+    if (input.value.trim()) (data[tab] ??= {})[name] = input.value.trim();
+  }
+  const url = URL.createObjectURL(new Blob([JSON.stringify(data, null, 2)], {type:"application/json"}));
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = "arvc-revisado.json";
+  link.click();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+});
+</script>
+</html>

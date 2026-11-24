@@ -1,0 +1,5 @@
+__pycache__/
+.env*
+.vercel/
+arvc-mapa.json
+arvc-revisado*.json
